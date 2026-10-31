@@ -1,0 +1,22 @@
+name: Validate n8n project
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Check workflow and run tests
+        run: npm run validate
+      - name: Validate Docker Compose
+        run: docker compose --env-file .env.example config --quiet

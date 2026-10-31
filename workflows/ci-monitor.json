@@ -1,0 +1,323 @@
+{
+  "name": "CI Sentinel - GitHub Actions to Slack",
+  "active": false,
+  "nodes": [
+    {
+      "id": "setup-note",
+      "name": "Setup guide",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -300
+      ],
+      "parameters": {
+        "content": "## CI Sentinel\n1. Edit **Monitor settings**.\n2. Select GitHub API credentials in **Fetch workflow runs**.\n3. Select Slack API credentials in **Send Slack alert**.\n4. Test once, then publish/activate.\n\nEvery 5 minutes. Failed attempts from the last 24 hours. Manual tests send real messages but do not persist deduplication. See README for delivery guarantees.",
+        "height": 260,
+        "width": 580
+      }
+    },
+    {
+      "id": "manual-trigger",
+      "name": "Test manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "schedule-trigger",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "monitor-settings",
+      "name": "Monitor settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        200
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "owner",
+              "name": "owner",
+              "value": "your-owner",
+              "type": "string"
+            },
+            {
+              "id": "repo",
+              "name": "repo",
+              "value": "your-repo",
+              "type": "string"
+            },
+            {
+              "id": "channel",
+              "name": "channel",
+              "value": "C0123456789",
+              "type": "string"
+            },
+            {
+              "id": "lookback",
+              "name": "lookbackHours",
+              "value": 24,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "prepare-config",
+      "name": "Validate settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function prepareConfig(input, now) {\r\n  const owner = typeof input.owner === 'string' ? input.owner.trim().toLowerCase() : '';\r\n  const repo = typeof input.repo === 'string' ? input.repo.trim().toLowerCase() : '';\r\n  const channel = typeof input.channel === 'string' ? input.channel.trim() : '';\r\n  if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(owner) || owner === 'your-owner') {\r\n    throw new Error('Configure a valid GitHub owner in Monitor settings.');\r\n  }\r\n  if (!/^[a-z0-9_.-]{1,100}$/.test(repo) || ['.', '..', 'your-repo'].includes(repo)) {\r\n    throw new Error('Configure a valid GitHub repository name in Monitor settings.');\r\n  }\r\n  if (!/^[CG][A-Z0-9]{8,}$/.test(channel) || channel === 'C0123456789') {\r\n    throw new Error('Configure your Slack channel ID in Monitor settings, not a channel name.');\r\n  }\r\n  const lookbackHours = input.lookbackHours;\r\n  if (!Number.isInteger(lookbackHours) || lookbackHours < 1 || lookbackHours > 168) {\r\n    throw new Error('lookbackHours must be an integer from 1 to 168.');\r\n  }\r\n  if (!Number.isFinite(now)) {\r\n    throw new Error('The execution timestamp is invalid.');\r\n  }\r\n  return {\r\n    owner,\r\n    repo,\r\n    channel,\r\n    lookbackHours,\r\n    windowStart: now - lookbackHours * 60 * 60 * 1000,\r\n    apiUrl: `https://api.github.com/repos/${owner}/${repo}/actions/runs`,\r\n  };\r\n}\n\nreturn [{ json: prepareConfig($input.first().json, Date.now()) }];\n"
+      }
+    },
+    {
+      "id": "fetch-runs",
+      "name": "Fetch workflow runs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        200
+      ],
+      "parameters": {
+        "url": "={{ $json.apiUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "page",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.workflow_runs.length < 100 }}",
+              "limitPagesFetched": false,
+              "requestInterval": 250
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "select-alerts",
+      "name": "Select new failures",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function readSent(state) {\r\n  const sent = state.sent ?? {};\r\n  if (typeof sent !== 'object' || sent === null || Array.isArray(sent) ||\r\n      Object.values(sent).some((value) => !Number.isFinite(value))) {\r\n    throw new Error('Invalid saved delivery state. Inspect workflow static data before retrying.');\r\n  }\r\n  return sent;\r\n}\n\nfunction slackText(value, maxLength = 160) {\r\n  return String(value)\r\n    .replace(/[\\r\\n\\t]/g, ' ')\r\n    .slice(0, maxLength)\r\n    .replace(/&/g, '&amp;')\r\n    .replace(/</g, '&lt;')\r\n    .replace(/>/g, '&gt;');\r\n}\n\nfunction selectAlerts(pages, config, state) {\r\n  if (!Array.isArray(pages) || pages.length === 0) {\r\n    throw new Error('GitHub returned no response pages.');\r\n  }\r\n  const sent = readSent(state);\r\n  const alerts = new Map();\r\n  for (const page of pages) {\r\n    if (!page || !Array.isArray(page.workflow_runs) ||\r\n        !Number.isInteger(page.total_count) || page.total_count < 0) {\r\n      throw new Error('Unexpected GitHub response: expected total_count and workflow_runs.');\r\n    }\r\n    for (const run of page.workflow_runs) {\r\n      if (!run || typeof run.status !== 'string') {\r\n        throw new Error('GitHub returned an invalid workflow run.');\r\n      }\r\n      if (run.status !== 'completed' ||\r\n          !['failure', 'timed_out', 'startup_failure'].includes(run.conclusion)) {\r\n        continue;\r\n      }\r\n      const updatedAt = Date.parse(run.updated_at);\r\n      if (!Number.isFinite(updatedAt) || !Number.isSafeInteger(run.id) || run.id <= 0 ||\r\n          !Number.isSafeInteger(run.run_attempt) || run.run_attempt <= 0) {\r\n        throw new Error('A failed GitHub run is missing a valid ID, attempt, or updated_at.');\r\n      }\r\n      if (updatedAt < config.windowStart) continue;\r\n      const key = `${config.owner}/${config.repo}:${config.channel}:${run.id}:${run.run_attempt}`;\r\n      if (Object.hasOwn(sent, key)) continue;\r\n      const runUrl = `https://github.com/${config.owner}/${config.repo}/actions/runs/${run.id}`;\r\n      const text = [\r\n        `GitHub Actions: ${run.conclusion}`,\r\n        `Repository: ${slackText(config.owner)}/${slackText(config.repo)}`,\r\n        `Workflow: ${slackText(run.name ?? '(unnamed workflow)')}`,\r\n        `Branch: ${slackText(run.head_branch ?? '(no branch)')}`,\r\n        `Actor: ${slackText(run.triggering_actor?.login ?? run.actor?.login ?? '(unknown)')}`,\r\n        `Commit: ${slackText(run.head_sha ?? '(unknown)', 12)}`,\r\n        `Run: ${run.id} | Attempt: ${run.run_attempt}`,\r\n        `Updated: ${new Date(updatedAt).toISOString()}`,\r\n        runUrl,\r\n      ].join('\\n');\r\n      alerts.set(key, {\r\n        key,\r\n        updatedAt,\r\n        slackBody: {\r\n          channel: config.channel,\r\n          text,\r\n          mrkdwn: false,\r\n          parse: 'none',\r\n          link_names: false,\r\n          unfurl_links: false,\r\n          unfurl_media: false,\r\n        },\r\n      });\r\n    }\r\n  }\r\n  return [...alerts.values()].sort((a, b) => a.updatedAt - b.updatedAt || a.key.localeCompare(b.key));\r\n}\n\nreturn selectAlerts($input.all().map(item => item.json), $('Validate settings').first().json, $getWorkflowStaticData('global')).map(json => ({ json }));\n"
+      }
+    },
+    {
+      "id": "send-slack",
+      "name": "Send Slack alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.slackBody }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1100
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "acknowledge-alerts",
+      "name": "Confirm delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function readSent(state) {\r\n  const sent = state.sent ?? {};\r\n  if (typeof sent !== 'object' || sent === null || Array.isArray(sent) ||\r\n      Object.values(sent).some((value) => !Number.isFinite(value))) {\r\n    throw new Error('Invalid saved delivery state. Inspect workflow static data before retrying.');\r\n  }\r\n  return sent;\r\n}\n\nfunction acknowledgeAlerts(responses, alerts, config, state) {\r\n  if (responses.length !== alerts.length || alerts.length === 0) {\r\n    throw new Error('Slack response count does not match the pending alerts.');\r\n  }\r\n  for (const response of responses) {\r\n    if (!response || response.ok !== true || typeof response.ts !== 'string' ||\r\n        response.channel !== config.channel) {\r\n      const reason = response && typeof response.error === 'string' ? response.error : 'invalid response';\r\n      throw new Error(`Slack did not confirm delivery: ${reason}. No alerts were acknowledged.`);\r\n    }\r\n  }\r\n  // n8n persists static data only after a successful production execution.\r\n  const sent = Object.fromEntries(\r\n    Object.entries(readSent(state)).filter(([, timestamp]) => timestamp >= config.windowStart),\r\n  );\r\n  for (const alert of alerts) sent[alert.key] = alert.updatedAt;\r\n  state.sent = sent;\r\n  return [{ json: { delivered: alerts.length, channel: config.channel } }];\r\n}\n\nreturn acknowledgeAlerts($input.all().map(item => item.json), $('Select new failures').all().map(item => item.json), $('Validate settings').first().json, $getWorkflowStaticData('global'));\n"
+      }
+    }
+  ],
+  "connections": {
+    "Test manually": {
+      "main": [
+        [
+          {
+            "node": "Monitor settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Monitor settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor settings": {
+      "main": [
+        [
+          {
+            "node": "Validate settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate settings": {
+      "main": [
+        [
+          {
+            "node": "Fetch workflow runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch workflow runs": {
+      "main": [
+        [
+          {
+            "node": "Select new failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select new failures": {
+      "main": [
+        [
+          {
+            "node": "Send Slack alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack alert": {
+      "main": [
+        [
+          {
+            "node": "Confirm delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 240,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "timezone": "Etc/UTC"
+  },
+  "pinData": {},
+  "tags": []
+}

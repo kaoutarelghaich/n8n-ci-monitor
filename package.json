@@ -1,0 +1,16 @@
+{
+  "name": "n8n-ci-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local n8n automation that monitors GitHub Actions and alerts Slack.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build-workflow.mjs",
+    "check": "node scripts/build-workflow.mjs --check",
+    "test": "node --test",
+    "validate": "npm run check && npm test"
+  }
+}
